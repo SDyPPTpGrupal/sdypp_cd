@@ -1,0 +1,39 @@
+# Claves privadas y de host
+claves/id_deploy
+claves/host/*
+!claves/host/.gitkeep
+
+# Logs y bitácoras
+logs/*.log
+!logs/.gitkeep
+
+# Archivos de entorno
+.env
+*.env
+
+# Estado y colas de entrantes (volúmenes de ejecución)
+python/entrante/*
+!python/entrante/.gitkeep
+!python/entrante/rechazados/
+!python/entrante/historial/
+python/entrante/rechazados/*
+!python/entrante/rechazados/.gitkeep
+python/entrante/historial/*
+!python/entrante/historial/.gitkeep
+python/estado/*
+!python/estado/.gitkeep
+
+java/entrante/*
+!java/entrante/.gitkeep
+!java/entrante/rechazados/
+!java/entrante/historial/
+java/entrante/rechazados/*
+!java/entrante/rechazados/.gitkeep
+java/entrante/historial/*
+!java/entrante/historial/.gitkeep
+java/estado/*
+!java/estado/.gitkeep
+
+# Bloqueos y temporales
+*.lock
+*.tmp
