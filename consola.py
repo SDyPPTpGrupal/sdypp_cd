@@ -189,7 +189,9 @@ def url_disparo(cfg):
 
 
 def url_agentes(cfg):
-    return f"http://127.0.0.1:{cfg['CICD_PUERTO_AGENTES']}"
+    """El socket que ven las casas. Va por CICD_BIND y no por 127.0.0.1: el CD
+    bindea ahí, así que preguntarle por loopback lo da por caído estando sano."""
+    return f"http://{cfg.get('CICD_BIND') or '127.0.0.1'}:{cfg['CICD_PUERTO_AGENTES']}"
 
 
 def pedir_json(url, metodo="GET", cuerpo=None, timeout=15):
@@ -243,6 +245,14 @@ def encabezado(cfg):
     print()
     print(pintar(f"  CD · Plataforma · {cfg['CASA']}", "1"))
     print(f"  {estado}  ·  {estado_bal}")
+
+    faltan = []
+    if not any(os.path.exists(ruta_publica(e)) for e in EQUIPOS):
+        faltan.append("clave de publicación (opción 6) — sin esto nadie puede correr publicar.sh")
+    elif not manifiestos("python") and not manifiestos("java"):
+        faltan.append("publicar una versión — todavía no hay ninguna imagen que desplegar")
+    for linea in faltan:
+        print(pintar(f"  ! falta: {linea}", "33"))
 
 
 # ------------------------------------------------------------------ casas
@@ -587,7 +597,9 @@ def desplegar(cfg):
     archivos = manifiestos(equipo)
     if not archivos:
         mal(f"no hay manifiestos en {equipo}/entrante/historial/")
-        nota("hace falta que alguien haya publicado al menos una vez")
+        nota("hace falta que alguien haya corrido publicar.sh al menos una vez")
+        if not os.path.exists(ruta_publica(equipo)):
+            nota(f"y todavía no hay clave para {equipo}: generala en la opción 6")
         return
     print()
     for i, ruta in enumerate(archivos[:8], 1):
@@ -826,6 +838,17 @@ def configurar(cfg=None):
         print()
         nota("Falta al menos una casa. Vamos con la primera.")
         cfg = agregar_casa(cfg)
+
+    # La clave de publicación es el otro requisito para que el sistema sirva de
+    # algo: sin ella nadie puede correr publicar.sh, y sin publicar no hay imagen
+    # que desplegar. Se ofrece acá para no descubrirlo tres pasos después.
+    if not any(os.path.exists(ruta_publica(e)) for e in EQUIPOS):
+        print()
+        nota("Falta la clave con la que un dev publica versiones.")
+        if pedir_si("¿La genero ahora?"):
+            equipo = pedir("¿Para qué equipo?", default="python",
+                           validar=lambda v: None if v in EQUIPOS else "python o java")
+            generar_clave(cfg, equipo)
     return cfg
 
 
