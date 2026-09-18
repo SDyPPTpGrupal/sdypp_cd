@@ -198,6 +198,10 @@ class Pipeline:
         # aunque el CD se haya reiniciado en el medio.
         self.objetivo = {"generacion": generacion, "equipo": equipo, "casas": {}}
         self.deploy = threading.Lock()   # un deploy por equipo, igual que el flock
+        # Cuándo se asomó por última vez el agente de cada casa. Sale del propio
+        # long-poll, así que no hace falta un latido aparte: si un agente está
+        # preguntando por el objetivo, está vivo y llega al CD.
+        self.contactos = {}
         # --- barrera
         self.esperadas = set()
         self.reportes = {}
@@ -216,6 +220,11 @@ class Pipeline:
         bitacora("objetivo", "PUBLICADO",
                  f"equipo={self.equipo} generacion={generacion} casas={' '.join(sorted(casas))} | {motivo}")
         return generacion
+
+    def anotar_contacto(self, casa):
+        if casa:
+            with self.cambio:
+                self.contactos[casa] = time.time()
 
     def leer_objetivo(self, desde, espera):
         """Long-poll: devuelve el objetivo sólo si su generación supera a `desde`.
@@ -530,11 +539,18 @@ def estado_completo(equipo):
     with pipeline.cambio:
         objetivo = dict(pipeline.objetivo)
         reportes = dict(pipeline.reportes)
+        contactos = dict(pipeline.contactos)
+    ahora_mono = time.time()
     return {
         "equipo": equipo,
         "casas": NODOS[equipo],
         "objetivo": objetivo,
         "ultimosReportes": reportes,
+        # Segundos desde que cada agente preguntó por el objetivo. Un agente sano
+        # aparece cada ESPERA_LONGPOLL como mucho; si falta o está viejo, publicar
+        # una versión ahora terminaría en un deploy abortado por falta de reporte.
+        "agentes": {casa: round(ahora_mono - visto, 1) for casa, visto in contactos.items()},
+        "esperaLongPoll": ESPERA_LONGPOLL,
         "estadoPorCasa": {casa: leer_estado(equipo, casa) for casa in NODOS[equipo]},
         "balanceadores": BALANCEADORES,
     }
@@ -608,6 +624,7 @@ class ManejadorAgentes(Manejador):
                 # un deploy — y ese deploy aborta para todas, no sólo para ella.
                 "equipos": {e: {"generacion": PIPELINES[e].objetivo["generacion"],
                                 "casas": NODOS[e],
+                                "agentes": sorted(PIPELINES[e].contactos),
                                 "puertos": {c: {"blue": puerto_de(c, "blue"),
                                                 "green": puerto_de(c, "green")}
                                             for c in NODOS[e]}} for e in EQUIPOS},
@@ -625,6 +642,7 @@ class ManejadorAgentes(Manejador):
             desde = int(self.parametro("generacion", "0"))
         except ValueError:
             return self.responder(400, {"error": "generacion no es un entero"})
+        PIPELINES[equipo].anotar_contacto(casa)
         objetivo = PIPELINES[equipo].leer_objetivo(desde, ESPERA_LONGPOLL)
         if objetivo is None:
             # Sin novedad. Se contesta 200 con un flag y no 204: un 204 no lleva

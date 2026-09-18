@@ -697,15 +697,29 @@ def ver_nodos(cfg):
             mal(f"el CD no contesta: {e}")
             return
         print(f"\n  {equipo} · objetivo publicado: generación {estado['objetivo']['generacion']}")
-        print(pintar(f"    {'casa':<16}{'ip':<17}{'color':<8}{'ver':<6}{'puertos':<14}último reporte", "90"))
+        print(pintar(f"    {'casa':<16}{'ip':<17}{'color':<8}{'ver':<6}{'agente':<14}último reporte", "90"))
+        agentes = estado.get("agentes", {})
+        tope = float(estado.get("esperaLongPoll", 30)) * 2 + 10
         for casa in casas:
             e = estado["estadoPorCasa"].get(casa, {})
             reporte = estado["ultimosReportes"].get(casa, {})
             cual = reporte.get("estado", "—")
             marca = {"listo": "32", "fallo": "31"}.get(cual, "90")
+            visto = agentes.get(casa)
+            if visto is None:
+                agente = pintar(f"{'sin contacto':<14}", "31")
+            elif visto <= tope:
+                agente = pintar(f"{'hace ' + str(int(visto)) + ' s':<14}", "32")
+            else:
+                agente = pintar(f"{'hace ' + str(int(visto)) + ' s':<14}", "33")
             print(f"    {casa:<16}{ip_de(cfg, casa):<17}"
                   f"{e.get('COLOR_ACTIVO', '—'):<8}{e.get('VERSION_ACTIVA', '—'):<6}"
-                  f"{puertos_de(cfg, casa):<14}" + pintar(cual, marca))
+                  + agente + pintar(cual, marca))
+        mudas = [c for c in casas if c not in agentes]
+        if mudas:
+            print()
+            aviso(f"sin agente conectado: {' '.join(mudas)}")
+            nota("publicar ahora terminaría en un deploy abortado por falta de reporte")
         sin_estado = [c for c in casas if not estado["estadoPorCasa"].get(c, {}).get("COLOR_ACTIVO")]
         if sin_estado:
             print()

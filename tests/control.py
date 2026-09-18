@@ -166,6 +166,32 @@ class PruebaGeneracionPersistida(unittest.TestCase):
         self.assertEqual(control.leer_generacion("java"), 0)
 
 
+class PruebaContactoDeAgentes(unittest.TestCase):
+    """Saber qué agentes están conectados antes de publicar: un deploy con una
+    casa muda aborta por falta de reporte, y el viaje se pierde igual."""
+
+    def setUp(self):
+        self.pipeline = control.Pipeline("python")
+
+    def test_el_long_poll_deja_rastro(self):
+        self.pipeline.anotar_contacto("casa-a")
+        self.assertIn("casa-a", self.pipeline.contactos)
+
+    def test_se_queda_con_el_ultimo(self):
+        self.pipeline.anotar_contacto("casa-a")
+        primero = self.pipeline.contactos["casa-a"]
+        time.sleep(0.01)
+        self.pipeline.anotar_contacto("casa-a")
+        self.assertGreater(self.pipeline.contactos["casa-a"], primero)
+
+    def test_una_casa_sin_nombre_no_ensucia(self):
+        """El parámetro `casa` del GET es opcional: sin él no se anota nada en vez
+        de guardar una clave vacía."""
+        self.pipeline.anotar_contacto("")
+        self.pipeline.anotar_contacto(None)
+        self.assertEqual(self.pipeline.contactos, {})
+
+
 class PruebaBarrera(unittest.TestCase):
     def setUp(self):
         self.pipeline = control.Pipeline("python")
