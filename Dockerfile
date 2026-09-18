@@ -9,9 +9,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # - curl y jq para interactuar con balanceador y validar manifiestos
 # - procps para supervisión de procesos (pgrep en HEALTHCHECK)
 # - ca-certificates y tar para descarga y descompresión de grpcurl
+# - python3 para el servidor de control (objetivo + barrera), sólo stdlib
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     openssh-client \
+    python3 \
     inotify-tools \
     curl \
     jq \
@@ -43,16 +45,22 @@ RUN mkdir -p /cicd/bin \
              /cicd/java/entrante/rechazados /cicd/java/entrante/historial /cicd/java/estado \
              /cicd/logs
 
-# Copiar scripts del sistema y contrato
+# Copiar scripts del sistema, el servidor de control y el contrato
 COPY bin/ /cicd/bin/
+COPY app/ /cicd/app/
 COPY deploy.sh /cicd/bin/deploy.sh
 RUN chmod +x /cicd/bin/*.sh
 
-# Puerto de escucha para sshd
-EXPOSE 2222
+# Puertos: sshd para el dev, control para los agentes del tailnet.
+# El socket de disparo (8083) no se expone: vive en el loopback del contenedor.
+EXPOSE 2222 8082
 
-# HEALTHCHECK: sshd vivo y los dos vigilantes vivos (Sección 4)
-HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
-    CMD pgrep sshd >/dev/null && pgrep -f "vigilante.sh python" >/dev/null && pgrep -f "vigilante.sh java" >/dev/null || exit 1
+# HEALTHCHECK: sshd vivo, los dos vigilantes vivos y el control respondiendo
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD pgrep sshd >/dev/null \
+     && pgrep -f "vigilante.sh python" >/dev/null \
+     && pgrep -f "vigilante.sh java" >/dev/null \
+     && curl -sf -o /dev/null "http://127.0.0.1:${CICD_PUERTO_DISPARO:-8083}/deploy/python/estado" \
+     || exit 1
 
 ENTRYPOINT ["/cicd/bin/arranque.sh"]

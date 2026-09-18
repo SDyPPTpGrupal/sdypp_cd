@@ -6,7 +6,11 @@ set -euo pipefail
 #
 # Escucha eventos moved_to sobre manifiesto.json en /cicd/<equipo>/entrante/,
 # valida el manifiesto, asegura exclusión mutua por equipo mediante flock,
-# y ejecuta deploy.sh desplegar.
+# y dispara el despliegue en el servidor de control (app/control.py).
+#
+# El disparo es un POST por loopback que se queda colgado hasta que el ciclo
+# termina, igual que antes se quedaba esperando a deploy.sh: así el flock sigue
+# tomado durante todo el despliegue y dos publicaciones seguidas no se pisan.
 # ==============================================================================
 
 # Directorio base del CD (/cicd en el contenedor, o relativo para desarrollo/test)
@@ -20,21 +24,19 @@ fi
 
 # Variables de configuración con valores por defecto según especificación
 CASA="${CASA:-casa-tomas}"
-REGISTRY="${REGISTRY:-100.78.246.64:5000}"
+REGISTRY="${REGISTRY:-100.91.228.65:5000}"
 CICD_BITACORA="${CICD_BITACORA:-${CICD_BASE}/logs/cicd.log}"
 CICD_NODOS_PYTHON="${CICD_NODOS_PYTHON:-}"
 CICD_NODOS_JAVA="${CICD_NODOS_JAVA:-}"
 
-# Ubicación de deploy.sh
-if [ -n "${CICD_DEPLOY:-}" ]; then
-    DEPLOY_BIN="$CICD_DEPLOY"
-elif [ -f "${CICD_BASE}/bin/deploy.sh" ]; then
-    DEPLOY_BIN="${CICD_BASE}/bin/deploy.sh"
-elif [ -f "${CICD_BASE}/deploy.sh" ]; then
-    DEPLOY_BIN="${CICD_BASE}/deploy.sh"
-else
-    DEPLOY_BIN="deploy.sh"
-fi
+# Socket de disparo del servidor de control (loopback del propio contenedor)
+CICD_PUERTO_DISPARO="${CICD_PUERTO_DISPARO:-8083}"
+CICD_DISPARO="${CICD_DISPARO:-http://127.0.0.1:${CICD_PUERTO_DISPARO}}"
+
+# La barrera del CD espera a que reporten todas las casas; el curl tiene que
+# aguantar más que eso o el vigilante soltaría el cerrojo antes de tiempo.
+CICD_ESPERA_BARRERA="${CICD_ESPERA_BARRERA:-180}"
+CICD_ESPERA_DISPARO="${CICD_ESPERA_DISPARO:-$((CICD_ESPERA_BARRERA + 120))}"
 
 # ------------------------------------------------------------------------------
 # registrar_bitacora: escribe en cicd.log con el formato estándar del TP
@@ -131,21 +133,32 @@ procesar_manifiesto() {
         mv "$archivo_manifiesto" "$archivo_procesando"
 
         # ----------------------------------------------------------------------
-        # 3. Ejecución de deploy.sh desplegar
+        # 3. Disparo del despliegue en el servidor de control
         # ----------------------------------------------------------------------
-        registrar_bitacora "deploy" "INICIO" "equipo=${equipo} version=${m_version} casas=${nodos} | Iniciando despliegue de ${m_imagen}"
+        registrar_bitacora "manifiesto" "RECIBIDO" "equipo=${equipo} version=${m_version} casas=${nodos} | ${m_imagen}"
 
         local codigo_despliegue=0
-        # shellcheck disable=SC2086
-        "$DEPLOY_BIN" desplegar --equipo "$equipo" --manifiesto "$archivo_procesando" $nodos || codigo_despliegue=$?
+        local respuesta=""
+        respuesta=$(curl -sS --max-time "$CICD_ESPERA_DISPARO" \
+                         -H "Content-Type: application/json" \
+                         --data-binary "@${archivo_procesando}" \
+                         "${CICD_DISPARO}/deploy/${equipo}/desplegar") || codigo_despliegue=$?
+
+        # El control contesta {"ok": true|false, "detalle": "..."}; un curl que
+        # funcionó pero trajo ok=false también es un despliegue fallido.
+        if [ "$codigo_despliegue" -eq 0 ] && ! echo "$respuesta" | jq -e '.ok == true' >/dev/null 2>&1; then
+            codigo_despliegue=1
+        fi
 
         # ----------------------------------------------------------------------
         # 4. Resultado en bitácora y archivado en historial
         # ----------------------------------------------------------------------
+        # El resultado con su detalle ya lo escribió el control; acá sólo queda
+        # asentado qué pasó con este manifiesto, para poder seguirlo en el historial.
         if [ "$codigo_despliegue" -eq 0 ]; then
-            registrar_bitacora "deploy" "OK" "equipo=${equipo} version=${m_version} casas=${nodos} | version=${m_version} casas=${nodos} la anterior sigue viva"
+            registrar_bitacora "manifiesto" "ARCHIVADO" "equipo=${equipo} version=${m_version} casas=${nodos} | desplegado"
         else
-            registrar_bitacora "deploy" "FALLO" "equipo=${equipo} version=${m_version} casas=${nodos} | FALLO — las versiones viejas siguen sirviendo"
+            registrar_bitacora "manifiesto" "ARCHIVADO" "equipo=${equipo} version=${m_version} casas=${nodos} | el despliegue falló, las versiones viejas siguen sirviendo"
         fi
 
         mkdir -p "${dir_entrante}/historial"

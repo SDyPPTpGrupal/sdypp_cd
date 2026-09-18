@@ -1,0 +1,22 @@
+# Volúmenes de ejecución: no van a la imagen, y además el CD deja archivos de root
+# adentro que rompen el armado del contexto de build.
+logs/
+claves/
+python/
+java/
+
+# Configuración local y secretos
+plataforma.env
+*.env
+!.env.example
+
+# La imagen del CD no necesita ni las pruebas ni el agente: el agente tiene su
+# propio Dockerfile y se construye en cada casa.
+tests/
+agente/
+
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.md

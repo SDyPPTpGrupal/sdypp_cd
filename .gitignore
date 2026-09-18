@@ -37,3 +37,8 @@ java/estado/*
 # Bloqueos y temporales
 *.lock
 *.tmp
+
+# Cachés de Python y artefactos de las pruebas
+__pycache__/
+*.pyc
+tests/e2e/app/contrato.proto

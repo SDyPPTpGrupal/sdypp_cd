@@ -5,11 +5,17 @@ set -euo pipefail
 # arranque.sh — ENTRYPOINT del contenedor CD (sdypp-cicd)
 #
 # Configura el entorno seguro SSH, genera ~/.ssh/config desde CASAS,
-# establece permisos por equipo, arranca sshd (:2222) y el vigilante,
-# y supervisa que ante la caída de cualquiera de los dos, el contenedor caiga.
+# establece permisos por equipo, y arranca los tres procesos del CD:
+#   sshd (:2222)            recibe el manifiesto del dev
+#   control.py              publica el objetivo (:8082) y dispara (127.0.0.1:8083)
+#   vigilante.sh            mira entrante/ y dispara el despliegue
+# Si cualquiera de los tres muere, el contenedor se cae.
 # ==============================================================================
 
 CICD_BASE="${CICD_BASE:-/cicd}"
+# Configurable porque el CD corre con --network host: si ya hay un sshd (o un
+# CD de prueba) en el 2222 de la máquina, el bind falla y el contenedor se cae.
+CICD_PUERTO_SSH="${CICD_PUERTO_SSH:-2222}"
 
 echo "==> Iniciando sdypp-cicd (CASA: ${CASA:-casa-tomas})"
 
@@ -21,15 +27,21 @@ if [ -z "${CASAS:-}" ]; then
     exit 1
 fi
 
-if [ -z "${CICD_NODOS_PYTHON:-}" ]; then
-    echo "ERROR: La variable de entorno obligatoria CICD_NODOS_PYTHON no está definida" >&2
+# Cada equipo es opcional por separado: mientras Java no tenga casas con agente,
+# su pipeline queda levantado pero sin nodos, y un manifiesto suyo se rechaza con
+# un motivo claro en vez de desplegar en el vacío. Lo que no tiene sentido es
+# arrancar sin ninguno de los dos.
+if [ -z "${CICD_NODOS_PYTHON:-}" ] && [ -z "${CICD_NODOS_JAVA:-}" ]; then
+    echo "ERROR: hay que definir CICD_NODOS_PYTHON, CICD_NODOS_JAVA o las dos" >&2
     exit 1
 fi
 
-if [ -z "${CICD_NODOS_JAVA:-}" ]; then
-    echo "ERROR: La variable de entorno obligatoria CICD_NODOS_JAVA no está definida" >&2
-    exit 1
-fi
+for _equipo in PYTHON JAVA; do
+    eval "_nodos=\${CICD_NODOS_${_equipo}:-}"
+    if [ -z "$_nodos" ]; then
+        echo "AVISO: CICD_NODOS_${_equipo} vacía — el pipeline ${_equipo} queda sin casas"
+    fi
+done
 
 # ------------------------------------------------------------------------------
 # 2. Claves de host persistentes para sshd (:2222)
@@ -119,7 +131,7 @@ chmod 600 /root/.ssh/config
 # ------------------------------------------------------------------------------
 mkdir -p /etc/ssh/sshd_config.d /run/sshd
 cat <<EOF > /etc/ssh/sshd_config.d/cicd.conf
-Port 2222
+Port ${CICD_PUERTO_SSH}
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
@@ -131,21 +143,35 @@ EOF
 # ------------------------------------------------------------------------------
 # 6. Lanzamiento supervisado: sshd y vigilante.sh
 # ------------------------------------------------------------------------------
-echo "Iniciando sshd en :2222..."
+echo "Iniciando sshd en :${CICD_PUERTO_SSH}..."
 /usr/sbin/sshd -D -e &
 PID_SSHD=$!
+
+echo "Iniciando servidor de control (agentes en ${CICD_BIND:-127.0.0.1}:${CICD_PUERTO_AGENTES:-8082})..."
+python3 -u "${CICD_BASE}/app/control.py" &
+PID_CONTROL=$!
+
+# El vigilante dispara contra el socket de control: se espera a que esté
+# escuchando antes de largarlo, para que un manifiesto que ya estaba en
+# entrante/ al arrancar no se pierda contra un puerto todavía cerrado.
+for _ in $(seq 1 30); do
+    if curl -sf -o /dev/null "http://127.0.0.1:${CICD_PUERTO_DISPARO:-8083}/deploy/python/estado"; then
+        break
+    fi
+    sleep 0.5
+done
 
 echo "Iniciando vigilante para ambos pipelines..."
 "${CICD_BASE}/bin/vigilante.sh" ambos &
 PID_VIGILANTE=$!
 
 # Si se recibe señal de apagado, terminar procesos hijos sin kill -9
-trap 'echo "Recibida señal de apagado. Terminando procesos..."; kill -TERM "$PID_SSHD" "$PID_VIGILANTE" 2>/dev/null || true; wait "$PID_SSHD" "$PID_VIGILANTE" 2>/dev/null || true; exit 0' SIGTERM SIGINT
+trap 'echo "Recibida señal de apagado. Terminando procesos..."; kill -TERM "$PID_SSHD" "$PID_CONTROL" "$PID_VIGILANTE" 2>/dev/null || true; wait "$PID_SSHD" "$PID_CONTROL" "$PID_VIGILANTE" 2>/dev/null || true; exit 0' SIGTERM SIGINT
 
-# Regla: si sshd o el vigilante mueren, el contenedor se cae
-wait -n "$PID_SSHD" "$PID_VIGILANTE"
+# Regla: si sshd, el control o el vigilante mueren, el contenedor se cae
+wait -n "$PID_SSHD" "$PID_CONTROL" "$PID_VIGILANTE"
 CODIGO_SALIDA=$?
 
 echo "Uno de los procesos críticos terminó con código $CODIGO_SALIDA. Apagando contenedor..." >&2
-kill -TERM "$PID_SSHD" "$PID_VIGILANTE" 2>/dev/null || true
+kill -TERM "$PID_SSHD" "$PID_CONTROL" "$PID_VIGILANTE" 2>/dev/null || true
 exit "$CODIGO_SALIDA"

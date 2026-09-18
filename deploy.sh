@@ -25,7 +25,7 @@ CASA="${CASA:-casa-tomas}"
 CASAS="${CASAS:-}"
 PUERTOS_CASA="${PUERTOS_CASA:-}"
 BALANCEADORES="${BALANCEADORES:-http://127.0.0.1:8081}"
-REGISTRY="${REGISTRY:-100.78.246.64:5000}"
+REGISTRY="${REGISTRY:-100.91.228.65:5000}"
 INTENTOS_SALUD="${INTENTOS_SALUD:-30}"
 ESPERA_SALUD="${ESPERA_SALUD:-2}"
 DIR_REMOTO="${DIR_REMOTO:-\$HOME/sdypp}"
@@ -303,7 +303,7 @@ comando_desplegar() {
                 if [ "$estado_salud" = "healthy" ]; then
                     # Verificación de identidad y versión vía grpcurl desde el CD
                     local version_remota
-                    version_remota=$(grpcurl -max-time 5 -plaintext -proto "$PROTO_PATH" "${ip}:${p_nuevo}" sdypp.Servicio/Identidad 2>/dev/null | jq -r '.version // empty' 2>/dev/null || echo "")
+                    version_remota=$(grpcurl -max-time 5 -plaintext -import-path "$(dirname "$PROTO_PATH")" -proto "$(basename "$PROTO_PATH")" "${ip}:${p_nuevo}" sdypp.Servicio/Identidad 2>/dev/null | jq -r '.version // empty' 2>/dev/null || echo "")
 
                     if [ "$version_remota" = "$m_version" ]; then
                         echo "[$casa] Verificación exitosa: healthy y versión $version_remota confirmada"
