@@ -234,7 +234,7 @@ def encabezado(cfg):
     if bal is None:
         estado_bal = pintar("balanceador sin responder", "31")
         if consola_vecina():
-            estado_bal += pintar("  → opción 9 para levantarlo", "90")
+            estado_bal += pintar("  → opción b para levantarlo", "90")
     else:
         sanos = sum(1 for b in bal["backends"] if b.get("sano"))
         color = "32" if sanos and sanos == len(bal["backends"]) else "33"
@@ -455,6 +455,113 @@ def menu_contenedor(cfg):
         print()
         print(correr("docker", "logs", "--tail", "40", CONTENEDOR))
         pausa()
+
+
+# ------------------------------------------------------------------ claves de publicación
+def ruta_publica(equipo):
+    return os.path.join(RAIZ, "claves", f"deploy-{equipo}.pub")
+
+
+def generar_clave(cfg, equipo):
+    """Un par para que un dev pueda correr publicar.sh.
+
+    La pública queda en claves/ y el arranque del CD la instala como
+    authorized_keys del usuario deploy-<equipo>; la privada se guarda aparte para
+    que se la lleve el dev. Es el único secreto del sistema: quien la tenga puede
+    disparar despliegues.
+    """
+    destino = os.path.join(RAIZ, "claves")
+    os.makedirs(destino, exist_ok=True)
+    privada = os.path.join(destino, f"id_deploy_{equipo}")
+
+    if os.path.exists(privada) or os.path.exists(ruta_publica(equipo)):
+        aviso(f"ya hay una clave para {equipo}")
+        nota("generar otra invalida la anterior: quien la tenga deja de poder publicar")
+        if not pedir_si("¿Generar una nueva igual?", por_defecto=False):
+            return
+        for ruta in (privada, privada + ".pub", ruta_publica(equipo)):
+            try:
+                os.remove(ruta)
+            except OSError:
+                pass
+
+    r = subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", privada, "-N", "",
+                        "-C", f"deploy-{equipo}@sdypp", "-q"], capture_output=True, text=True)
+    if r.returncode != 0:
+        mal(f"ssh-keygen falló: {r.stderr.strip()[:200]}")
+        return
+    os.replace(privada + ".pub", ruta_publica(equipo))
+    os.chmod(privada, 0o600)
+    ok(f"par generado para {equipo}")
+
+    print()
+    nota("La PÚBLICA ya quedó en el CD:")
+    print(f"    {ruta_publica(equipo)}")
+    nota("La PRIVADA hay que pasársela al dev por un canal privado, y borrar esta copia:")
+    print(pintar(f"    {privada}", "33"))
+    print()
+    aviso("quien tenga esa clave puede disparar un deploy: no va al repo ni a un chat de grupo")
+    print()
+    if pedir_si("¿Reinicio el CD para que instale la clave nueva?"):
+        levantar_cd(cfg)
+
+
+def instrucciones_dev(cfg, equipo):
+    titulo(f"Lo que necesita el dev de {equipo}")
+    print(f"""
+  1. Guardar la clave privada en ~/.ssh/id_deploy  (chmod 600)
+
+  2. Agregar a ~/.ssh/config:
+
+       Host cd
+           HostName {cfg['CICD_BIND']}
+           Port {cfg['CICD_PUERTO_SSH']}
+           User deploy-{equipo}
+           IdentityFile ~/.ssh/id_deploy
+
+  3. Declarar el registry como inseguro en /etc/docker/daemon.json:
+
+       {{"insecure-registries": ["{cfg['REGISTRY']}"]}}
+
+  4. Y desde el repo de la app:
+
+       ./deploy/publicar.sh""")
+    print()
+    nota("publicar.sh construye, prueba, hace docker push y deja el manifiesto acá.")
+    nota("De ahí en adelante es todo del CD: se sigue desde la opción 1 o la 6.")
+
+
+def menu_claves(cfg):
+    while True:
+        titulo("Claves de publicación")
+        nota("Sin esto nadie puede correr publicar.sh, y sin publicar no hay imagen que desplegar.")
+        print()
+        for equipo in EQUIPOS:
+            estado = "instalada" if os.path.exists(ruta_publica(equipo)) else "sin clave"
+            marca = "✓" if os.path.exists(ruta_publica(equipo)) else "—"
+            print(f"    {marca} {equipo:<8} {estado}")
+        print("""
+  1  Generar un par para python
+  2  Generar un par para java
+  3  Ver lo que necesita el dev
+  0  Volver""")
+        try:
+            opcion = input("\n  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if opcion == "1":
+            generar_clave(cfg, "python")
+            pausa()
+        elif opcion == "2":
+            generar_clave(cfg, "java")
+            pausa()
+        elif opcion == "3":
+            equipo = pedir("¿De qué equipo?", default="python",
+                           validar=lambda v: None if v in EQUIPOS else "python o java")
+            instrucciones_dev(cfg, equipo)
+            pausa()
+        elif opcion == "0":
+            return
 
 
 # ------------------------------------------------------------------ opciones del menú
@@ -729,10 +836,11 @@ MENU = """
   3  Balanceador              qué réplicas están en rotación
   4  Rollback                 volver a la versión anterior
   5  Casas                    agregar, quitar, ver
-  6  Bitácora                 últimas 30 líneas
-  7  Contenedor del CD        levantar, reiniciar, bajar, logs
-  8  Configuración            ver y editar
-  9  Consola del balanceador  el otro componente de Plataforma
+  6  Claves de publicación    para que un dev pueda correr publicar.sh
+  7  Bitácora                 últimas 30 líneas
+  8  Contenedor del CD        levantar, reiniciar, bajar, logs
+  9  Configuración            ver y editar
+  b  Consola del balanceador  el otro componente de Plataforma
   0  Salir"""
 
 
@@ -772,13 +880,15 @@ def main():
         elif opcion == "5":
             menu_casas(cfg)
         elif opcion == "6":
+            menu_claves(cfg)
+        elif opcion == "7":
             ver_bitacora()
             pausa()
-        elif opcion == "7":
-            menu_contenedor(cfg)
         elif opcion == "8":
-            ver_config(cfg)
+            menu_contenedor(cfg)
         elif opcion == "9":
+            ver_config(cfg)
+        elif opcion in ("b", "B"):
             abrir_vecina()
         elif opcion == "0":
             return 0

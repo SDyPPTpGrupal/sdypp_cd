@@ -1,7 +1,9 @@
-# Claves privadas y de host
-claves/id_deploy
-claves/host/*
-!claves/host/.gitkeep
+# Claves: la carpeta entera es un volumen de ejecución. No se versiona NADA de
+# adentro — ni las privadas, obviamente, ni las públicas, que son por instalación
+# y las genera la consola. Antes sólo se ignoraba `claves/id_deploy`, y una clave
+# con cualquier otro nombre (id_deploy_python, por ejemplo) se colaba al repo.
+claves/*
+!claves/.gitkeep
 
 # Logs y bitácoras
 logs/*.log
