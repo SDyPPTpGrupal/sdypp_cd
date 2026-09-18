@@ -55,6 +55,26 @@ def nota(t):
     print(pintar(f"  {t}", "90"))
 
 
+def consola_vecina():
+    """La consola del balanceador, si el repo está al lado. Ver el equivalente
+    en `sdypp_balanceador/consola.py`: Plataforma corre los dos."""
+    ruta = os.path.join(os.path.dirname(RAIZ), "sdypp_balanceador", "consola.py")
+    return ruta if os.path.isfile(ruta) else None
+
+
+def abrir_vecina():
+    ruta = consola_vecina()
+    if not ruta:
+        mal("no encuentro el repo `sdypp_balanceador` al lado de este")
+        return
+    print()
+    nota(f"abriendo {ruta} — al salir volvés acá")
+    try:
+        subprocess.run([sys.executable, ruta], check=False)
+    except (OSError, KeyboardInterrupt):
+        pass
+
+
 def pausa():
     try:
         input(pintar("\n  ⏎ para volver al menú ", "90"))
@@ -213,6 +233,8 @@ def encabezado(cfg):
     bal = salud_balanceador(cfg)
     if bal is None:
         estado_bal = pintar("balanceador sin responder", "31")
+        if consola_vecina():
+            estado_bal += pintar("  → opción 9 para levantarlo", "90")
     else:
         sanos = sum(1 for b in bal["backends"] if b.get("sano"))
         color = "32" if sanos and sanos == len(bal["backends"]) else "33"
@@ -710,6 +732,7 @@ MENU = """
   6  Bitácora                 últimas 30 líneas
   7  Contenedor del CD        levantar, reiniciar, bajar, logs
   8  Configuración            ver y editar
+  9  Consola del balanceador  el otro componente de Plataforma
   0  Salir"""
 
 
@@ -755,6 +778,8 @@ def main():
             menu_contenedor(cfg)
         elif opcion == "8":
             ver_config(cfg)
+        elif opcion == "9":
+            abrir_vecina()
         elif opcion == "0":
             return 0
         elif opcion:
