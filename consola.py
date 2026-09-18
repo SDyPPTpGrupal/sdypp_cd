@@ -246,6 +246,13 @@ def encabezado(cfg):
     print(pintar(f"  CD · Plataforma · {cfg['CASA']}", "1"))
     print(f"  {estado}  ·  {estado_bal}")
 
+    for equipo in EQUIPOS:
+        curso = deploy_en_curso(cfg, equipo)
+        if curso:
+            esperando = " ".join(curso.get("esperando") or []) or "—"
+            print(pintar(f"  ⏳ deploy de {equipo} v{curso['version']} en curso hace "
+                         f"{curso['segundos']} s · esperando a: {esperando}", "33"))
+
     faltan = []
     if not any(os.path.exists(ruta_publica(e)) for e in EQUIPOS):
         faltan.append("clave de publicación (opción 6) — sin esto nadie puede correr publicar.sh")
@@ -594,6 +601,14 @@ def desplegar(cfg):
         equipo = pedir("Equipo", default="python",
                        validar=lambda v: None if v in EQUIPOS else "python o java")
 
+    curso = deploy_en_curso(cfg, equipo)
+    if curso:
+        esperando = " ".join(curso.get("esperando") or []) or "—"
+        aviso(f"ya hay un deploy de la v{curso['version']} corriendo hace {curso['segundos']} s")
+        nota(f"esperando a: {esperando}")
+        nota("hasta que termine no se puede lanzar otro. Se cancela desde la opción 4.")
+        return
+
     archivos = manifiestos(equipo)
     if not archivos:
         mal(f"no hay manifiestos en {equipo}/entrante/historial/")
@@ -685,6 +700,41 @@ def seguir_bitacora(hilo, limite=600):
         hilo.join(timeout=limite)
 
 
+def deploy_en_curso(cfg, equipo):
+    try:
+        return pedir_json(f"{url_disparo(cfg)}/deploy/{equipo}/estado", timeout=6).get("enCurso")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def cancelar_deploy(cfg, equipo):
+    """Cierra la barrera ya, en vez de esperar el timeout completo.
+
+    Sirve cuando ya se sabe que una casa no va a reportar —su agente está caído—
+    y no tiene sentido esperar los minutos que faltan: el deploy aborta por el
+    camino de siempre, baja el color nuevo y no toca el balanceador.
+    """
+    curso = deploy_en_curso(cfg, equipo)
+    if not curso:
+        aviso(f"no hay ningún deploy de {equipo} en curso")
+        return
+    esperando = " ".join(curso.get("esperando") or []) or "—"
+    print()
+    print(f"  deploy de la v{curso['version']}, generación {curso['generacion']}, "
+          f"hace {curso['segundos']} s")
+    print(f"  esperando a: {esperando}")
+    print()
+    nota("Cancelar lo hace abortar: las casas que ya levantaron el color nuevo lo bajan,")
+    nota("el balanceador no se toca y las versiones viejas siguen sirviendo.")
+    if not pedir_si("¿Cancelo?", por_defecto=False):
+        return
+    try:
+        r = pedir_json(f"{url_disparo(cfg)}/deploy/{equipo}/cancelar", "POST", b"{}", timeout=20)
+        (ok if r.get("ok") else mal)(r.get("detalle", ""))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        mal(str(e))
+
+
 def ver_nodos(cfg):
     titulo("Nodos conocidos")
     for equipo in EQUIPOS:
@@ -773,6 +823,31 @@ def hacer_rollback(cfg):
             mal(f"HTTP {e.code}")
     except (urllib.error.URLError, OSError, ValueError) as e:
         mal(str(e))
+
+
+def menu_rollback(cfg):
+    titulo("Rollback / cancelar")
+    hay = [e for e in EQUIPOS if deploy_en_curso(cfg, e)]
+    if hay:
+        aviso(f"hay un deploy en curso: {' '.join(hay)}")
+    print("""
+  1  Rollback: volver a la versión anterior
+  2  Cancelar el deploy en curso
+  0  Volver""")
+    try:
+        opcion = input("\n  > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if opcion == "1":
+        hacer_rollback(cfg)
+        pausa()
+    elif opcion == "2":
+        equipo = "python"
+        if casas_de(cfg, "java"):
+            equipo = pedir("¿Qué equipo?", default="python",
+                           validar=lambda v: None if v in EQUIPOS else "python o java")
+        cancelar_deploy(cfg, equipo)
+        pausa()
 
 
 def ver_bitacora():
@@ -871,7 +946,7 @@ MENU = """
   1  Desplegar                redesplegar un manifiesto ya publicado
   2  Nodos conocidos          casas, color activo, versión y último reporte
   3  Balanceador              qué réplicas están en rotación
-  4  Rollback                 volver a la versión anterior
+  4  Rollback / cancelar      volver a la anterior, o abortar el deploy en curso
   5  Casas                    agregar, quitar, ver
   6  Claves de publicación    para que un dev pueda correr publicar.sh
   7  Bitácora                 últimas 30 líneas
@@ -912,8 +987,7 @@ def main():
             ver_balanceador(cfg)
             pausa()
         elif opcion == "4":
-            hacer_rollback(cfg)
-            pausa()
+            menu_rollback(cfg)
         elif opcion == "5":
             menu_casas(cfg)
         elif opcion == "6":

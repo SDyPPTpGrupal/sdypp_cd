@@ -202,6 +202,10 @@ class Pipeline:
         # long-poll, así que no hace falta un latido aparte: si un agente está
         # preguntando por el objetivo, está vivo y llega al CD.
         self.contactos = {}
+        # Qué deploy está corriendo ahora, para poder decirlo en vez de contestar
+        # un "ya hay un deploy en curso" que no explica a quién se espera.
+        self.en_curso = None
+        self.cancelado = False
         # --- barrera
         self.esperadas = set()
         self.reportes = {}
@@ -220,6 +224,29 @@ class Pipeline:
         bitacora("objetivo", "PUBLICADO",
                  f"equipo={self.equipo} generacion={generacion} casas={' '.join(sorted(casas))} | {motivo}")
         return generacion
+
+    def describir_en_curso(self):
+        with self.cambio:
+            curso = dict(self.en_curso) if self.en_curso else None
+            faltan = sorted(self.esperadas - set(self.reportes)) if curso else []
+        if not curso:
+            return f"ya hay un deploy de {self.equipo} en curso"
+        segundos = int(time.time() - curso["desde"])
+        detalle = (f"hay un deploy de la v{curso['version']} en curso desde hace {segundos} s "
+                   f"(generacion {curso['generacion']})")
+        if faltan:
+            detalle += f", esperando a: {' '.join(faltan)}"
+        return detalle
+
+    def cancelar(self):
+        """Cierra la barrera ya. El hilo del deploy ve que faltan reportes y aborta
+        por el camino de siempre: baja el color nuevo y no toca el balanceador."""
+        with self.cambio:
+            if not self.en_curso:
+                return False, "no hay ningún deploy en curso"
+            self.cancelado = True
+        self.completa.set()
+        return True, "cancelado: el deploy va a abortar y bajar el color nuevo"
 
     def anotar_contacto(self, casa):
         if casa:
@@ -402,9 +429,13 @@ def desplegar(equipo, manifiesto):
         return False, motivo
 
     if not pipeline.deploy.acquire(blocking=False):
-        return False, f"ya hay un deploy de {equipo} en curso"
+        return False, pipeline.describir_en_curso()
 
     try:
+        with pipeline.cambio:
+            pipeline.en_curso = {"generacion": pipeline.objetivo["generacion"] + 1,
+                                 "version": version, "desde": time.time()}
+            pipeline.cancelado = False
         casas_str = " ".join(casas)
         bitacora("deploy", "INICIO",
                  f"equipo={equipo} version={version} casas={casas_str} | {manifiesto['imagen']}")
@@ -418,11 +449,14 @@ def desplegar(equipo, manifiesto):
         completa = pipeline.completa.wait(timeout=ESPERA_BARRERA)
         with pipeline.cambio:
             reportes = dict(pipeline.reportes)
+            cancelado = pipeline.cancelado
 
         faltan = [c for c in casas if c not in reportes]
         fallaron = [c for c, r in reportes.items() if r.get("estado") != "listo"]
-        if not completa or faltan or fallaron:
+        if not completa or faltan or fallaron or cancelado:
             detalle = f"sin reporte: {faltan or '-'} · con fallo: {fallaron or '-'}"
+            if cancelado:
+                detalle = "cancelado a mano · " + detalle
             if faltan:
                 detalle += " (si hay líneas 'acceso | RECHAZADO' arriba, es el token)"
             pipeline.publicar(objetivo_sin(equipo, deseado, planes),
@@ -479,6 +513,8 @@ def desplegar(equipo, manifiesto):
                  "la anterior sigue viva")
         return True, f"generacion={generacion}"
     finally:
+        with pipeline.cambio:
+            pipeline.en_curso = None
         pipeline.deploy.release()
 
 
@@ -540,6 +576,10 @@ def estado_completo(equipo):
         objetivo = dict(pipeline.objetivo)
         reportes = dict(pipeline.reportes)
         contactos = dict(pipeline.contactos)
+        curso = dict(pipeline.en_curso) if pipeline.en_curso else None
+        if curso:
+            curso["esperando"] = sorted(pipeline.esperadas - set(pipeline.reportes))
+            curso["segundos"] = int(time.time() - curso["desde"])
     ahora_mono = time.time()
     return {
         "equipo": equipo,
@@ -551,6 +591,7 @@ def estado_completo(equipo):
         # una versión ahora terminaría en un deploy abortado por falta de reporte.
         "agentes": {casa: round(ahora_mono - visto, 1) for casa, visto in contactos.items()},
         "esperaLongPoll": ESPERA_LONGPOLL,
+        "enCurso": curso,
         "estadoPorCasa": {casa: leer_estado(equipo, casa) for casa in NODOS[equipo]},
         "balanceadores": BALANCEADORES,
     }
@@ -689,6 +730,11 @@ class ManejadorDisparo(Manejador):
             if manifiesto is None:
                 return self.responder(400, {"error": "cuerpo no es JSON"})
             ok, detalle = desplegar(equipo, manifiesto)
+            return self.responder(200 if ok else 409, {"ok": ok, "detalle": detalle})
+        if accion == "cancelar":
+            ok, detalle = PIPELINES[equipo].cancelar()
+            if ok:
+                bitacora("deploy", "CANCELADO", f"equipo={equipo} | a pedido desde la consola")
             return self.responder(200 if ok else 409, {"ok": ok, "detalle": detalle})
         if accion == "rollback":
             ok, detalle = rollback(equipo)
